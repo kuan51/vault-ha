@@ -1,0 +1,174 @@
+# HashiCorp Vault HA Configuration with Raft Storage
+# This values file configures Vault in High Availability mode using Raft integrated storage
+# Based on the official HashiCorp Vault Helm chart v0.31.0
+
+global:
+  enabled: true
+  tlsDisable: true  # Set to false for production with proper TLS
+
+injector:
+  enabled: true
+  replicas: 1
+
+  image:
+    repository: "hashicorp/vault-k8s"
+    tag: "1.7.0"
+    pullPolicy: IfNotPresent
+
+  agentImage:
+    repository: "hashicorp/vault"
+    tag: "1.20.4"
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+server:
+  image:
+    repository: "hashicorp/vault"
+    tag: "1.20.4"
+    pullPolicy: IfNotPresent
+
+  # Enable HA mode with 3 replicas
+  ha:
+    enabled: true
+    replicas: 3
+
+    # Raft integrated storage configuration
+    raft:
+      enabled: true
+      setNodeId: true
+
+      config: |
+        ui = true
+
+        listener "tcp" {
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_disable = "true"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+
+          retry_join {
+            leader_api_addr = "http://vault-0.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-1.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-2.vault-internal:8200"
+          }
+
+          autopilot {
+            cleanup_dead_servers      = true
+            last_contact_threshold    = "10s"
+            max_trailing_logs         = 1000
+            server_stabilization_time = "10s"
+            min_quorum                = 2
+            disable_upgrade_migration = false
+          }
+        }
+
+        service_registration "kubernetes" {}
+
+        log_level = "info"
+        log_format = "json"
+
+    # Pod Disruption Budget for HA resilience
+    disruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+
+  # Resource configuration
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+  # Data storage configuration
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null  # Uses default storage class
+    accessMode: ReadWriteOnce
+
+  # Audit storage (optional)
+  auditStorage:
+    enabled: false
+    size: 10Gi
+    storageClass: null
+    accessMode: ReadWriteOnce
+
+  # Service configuration
+  service:
+    enabled: true
+    active:
+      enabled: true
+    standby:
+      enabled: true
+
+  # Service account configuration
+  serviceAccount:
+    create: true
+    name: "vault-sa"
+    serviceDiscovery:
+      enabled: true
+
+  # Kubernetes auth delegator
+  authDelegator:
+    enabled: true
+
+  # Pod anti-affinity for node distribution
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ template "vault.name" . }}
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  # Readiness and liveness probes
+  readinessProbe:
+    enabled: true
+    port: 8200
+    failureThreshold: 2
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3
+
+  livenessProbe:
+    enabled: false
+    path: "/v1/sys/health?standbyok=true"
+    port: 8200
+    failureThreshold: 2
+    initialDelaySeconds: 60
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3
+
+# UI Configuration
+ui:
+  enabled: true
+  serviceType: "ClusterIP"
+  publishNotReadyAddresses: true
+  externalPort: 8200
+
+# Server telemetry (Prometheus)
+serverTelemetry:
+  serviceMonitor:
+    enabled: false
+    selectors: {}
+    interval: 30s
+    scrapeTimeout: 10s

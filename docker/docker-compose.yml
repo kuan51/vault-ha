@@ -1,0 +1,197 @@
+services:
+  vault-0:
+    image: hashicorp/vault:1.15.6
+    container_name: vault-0
+    hostname: vault-0
+    ports:
+      - "18200:8200"
+    command: server
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_LOCAL_CONFIG: |
+        storage "raft" {
+          path = "/vault/file"
+          node_id = "vault-0"
+
+          # Autopilot configuration for automated cluster management
+          autopilot {
+            cleanup_dead_servers      = true
+            last_contact_threshold    = "10s"
+            max_trailing_logs         = 1000
+            server_stabilization_time = "10s"
+            min_quorum                = 2
+            disable_upgrade_migration = false
+          }
+        }
+
+        listener "tcp" {
+          address     = "0.0.0.0:8200"
+          tls_disable = "true"
+        }
+
+        api_addr = "http://vault-0:8200"
+        cluster_addr = "http://vault-0:8201"
+
+        # HA configuration using retry_join
+        retry_join {
+          leader_api_addr = "http://vault-1:8200"
+        }
+        retry_join {
+          leader_api_addr = "http://vault-2:8200"
+        }
+
+        # Enable UI for development
+        ui = true
+
+        # Logging configuration
+        log_level = "info"
+        log_format = "json"
+
+        # Disable mlock for Docker compatibility
+        disable_mlock = true
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_file1:/vault/file
+      - vault_logs1:/vault/logs
+    networks:
+      - vault_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "vault", "status", "|| exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  vault-1:
+    image: hashicorp/vault:1.15.6
+    container_name: vault-1
+    hostname: vault-1
+    ports:
+      - "18201:8200"
+    command: server
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_LOCAL_CONFIG: |
+        storage "raft" {
+          path = "/vault/file"
+          node_id = "vault-1"
+
+          # Autopilot configuration for automated cluster management
+          autopilot {
+            cleanup_dead_servers      = true
+            last_contact_threshold    = "10s"
+            max_trailing_logs         = 1000
+            server_stabilization_time = "10s"
+            min_quorum                = 2
+            disable_upgrade_migration = false
+          }
+        }
+
+        listener "tcp" {
+          address     = "0.0.0.0:8200"
+          tls_disable = "true"
+        }
+
+        api_addr = "http://vault-1:8200"
+        cluster_addr = "http://vault-1:8201"
+
+        retry_join {
+          leader_api_addr = "http://vault-0:8200"
+        }
+        retry_join {
+          leader_api_addr = "http://vault-2:8200"
+        }
+
+        ui = true
+        log_level = "info"
+        log_format = "json"
+        disable_mlock = true
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_file2:/vault/file
+      - vault_logs2:/vault/logs
+    networks:
+      - vault_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "vault", "status", "|| exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - vault-0
+
+  vault-2:
+    image: hashicorp/vault:1.15.6
+    container_name: vault-2
+    hostname: vault-2
+    ports:
+      - "18202:8200"
+    command: server
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_LOCAL_CONFIG: |
+        storage "raft" {
+          path = "/vault/file"
+          node_id = "vault-2"
+
+          # Autopilot configuration for automated cluster management
+          autopilot {
+            cleanup_dead_servers      = true
+            last_contact_threshold    = "10s"
+            max_trailing_logs         = 1000
+            server_stabilization_time = "10s"
+            min_quorum                = 2
+            disable_upgrade_migration = false
+          }
+        }
+
+        listener "tcp" {
+          address     = "0.0.0.0:8200"
+          tls_disable = "true"
+        }
+
+        api_addr = "http://vault-2:8200"
+        cluster_addr = "http://vault-2:8201"
+
+        retry_join {
+          leader_api_addr = "http://vault-0:8200"
+        }
+        retry_join {
+          leader_api_addr = "http://vault-1:8200"
+        }
+
+        ui = true
+        log_level = "info"
+        log_format = "json"
+        disable_mlock = true
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_file3:/vault/file
+      - vault_logs3:/vault/logs
+    networks:
+      - vault_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "vault", "status", "|| exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - vault-0
+      - vault-1
+
+volumes:
+  vault_file1:
+  vault_file2:
+  vault_file3:
+  vault_logs1:
+  vault_logs2:
+  vault_logs3:
+
+networks:
+  vault_network:
+    driver: bridge

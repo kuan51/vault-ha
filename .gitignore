@@ -1,0 +1,16 @@
+# Vault Keys and Tokens (NEVER COMMIT!)
+vault-keys.json
+*.snap
+backup-*.snap
+
+# Docker volumes (if using bind mounts)
+vault-data/
+
+# Logs
+*.log
+vault-logs/
+
+.claude
+.env
+
+.terraform

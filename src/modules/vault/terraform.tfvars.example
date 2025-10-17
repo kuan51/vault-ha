@@ -1,0 +1,60 @@
+# Example Terraform Variables for Vault Module
+# Copy this file to terraform.tfvars and customize as needed
+
+# Kubernetes Context (required for local deployment)
+# Set this to match your KUBE_CONTEXT from .env file
+# Alternatively, set via environment: export TF_VAR_KUBE_CONTEXT="docker-desktop"
+kube_context = "docker-desktop"
+
+# Vault Cluster Configuration
+release_name = "vault"
+namespace    = "vault"
+replicas     = 3  # Use 1 for dev/test, 3+ for HA
+
+# Helm Chart Configuration
+chart_version       = "0.31.0"
+vault_image_tag     = "1.20.4"
+vault_k8s_image_tag = "1.7.0"
+
+# Storage Configuration
+storage_size  = "10Gi"
+storage_class = null  # Uses cluster default
+
+# UI Configuration
+enable_ui      = true
+enable_ingress = false  # Set to true for ingress access
+ingress_host   = "vault.local"
+
+# Security Settings
+tls_disable = true  # Only for dev/test environments
+
+# Resource Limits
+pod_resources = {
+  requests = {
+    memory = "256Mi"
+    cpu    = "250m"
+  }
+  limits = {
+    memory = "512Mi"
+    cpu    = "500m"
+  }
+}
+
+# Logging Configuration
+log_level  = "info"
+log_format = "json"
+
+# Audit Storage (optional)
+enable_audit_storage = false
+audit_storage_size   = "10Gi"
+
+# Monitoring (optional)
+enable_service_monitor = false
+
+# Labels and Annotations
+labels = {
+  environment = "development"
+  managed-by  = "terraform"
+}
+
+annotations = {}

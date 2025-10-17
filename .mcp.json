@@ -1,0 +1,107 @@
+{
+    "mcpServers": {
+        "mcp-clear-thought": {
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "mcp-clear-thought",
+                "-v",
+                "${PWD}:/workspace",
+                "-w",
+                "/workspace",
+                "node:20-alpine",
+                "npx",
+                "-y",
+                "@waldzellai/clear-thought"
+            ],
+            "transportType": "stdio"
+        },
+        "mcp-stochasticthinking": {
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "mcp-stochasticthinking",
+                "-v",
+                "${PWD}:/workspace",
+                "-w",
+                "/workspace",
+                "node:20-alpine",
+                "npx",
+                "-y",
+                "@waldzellai/stochasticthinking"
+            ],
+            "transportType": "stdio"
+        },
+        "mcp-memory": {
+            "command": "docker",
+            "args": [
+                "run",
+                "-i",
+                "--name",
+                "mcp-memory",
+                "-v",
+                "claude-memory:/app/dist",
+                "--rm",
+                "mcp/memory"
+            ]
+        },
+        "mcp-deepwiki": {
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "mcp-deepwiki",
+                "-v",
+                "${PWD}:/workspace",
+                "-w",
+                "/workspace",
+                "node:20-alpine",
+                "npx",
+                "-y",
+                "mcp-deepwiki@latest"
+            ]
+        },
+        "mcp-terraform": {
+            "command": "docker",
+            "args": [
+                "run",
+                "-i",
+                "--name",
+                "mcp-terraform",
+                "--rm",
+                "hashicorp/terraform-mcp-server"
+            ]
+        },
+        "mcp-helm": {
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "mcp-helm",
+                "ghcr.io/zekker6/mcp-helm:v0.0.5",
+                "-mode=stdio"
+            ]
+        },
+        "mcp-vuln-nist": {
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "mcp-vuln-nist",
+                "mcp/vuln-nist-mcp-server"
+            ]
+        }
+    }
+}

@@ -1,0 +1,118 @@
+# HashiCorp Vault Development Configuration
+# This values file configures Vault for local development/testing
+# Single replica with file storage (no HA)
+
+global:
+  enabled: true
+  tlsDisable: true
+
+injector:
+  enabled: true
+  replicas: 1
+
+  image:
+    repository: "hashicorp/vault-k8s"
+    tag: "1.7.0"
+    pullPolicy: IfNotPresent
+
+  agentImage:
+    repository: "hashicorp/vault"
+    tag: "1.20.4"
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+server:
+  image:
+    repository: "hashicorp/vault"
+    tag: "1.20.4"
+    pullPolicy: IfNotPresent
+
+  # Standalone mode (single replica)
+  standalone:
+    enabled: true
+
+    config: |
+      ui = true
+
+      listener "tcp" {
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_disable = "true"
+      }
+
+      storage "file" {
+        path = "/vault/data"
+      }
+
+      log_level = "info"
+      log_format = "json"
+
+  # HA mode disabled for dev
+  ha:
+    enabled: false
+
+  # Minimal resources for development
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 250m
+
+  # Data storage configuration
+  dataStorage:
+    enabled: true
+    size: 5Gi
+    storageClass: null
+    accessMode: ReadWriteOnce
+
+  # No audit storage in dev mode
+  auditStorage:
+    enabled: false
+
+  # Service configuration
+  service:
+    enabled: true
+
+  # Service account configuration
+  serviceAccount:
+    create: true
+    name: "vault-sa"
+    serviceDiscovery:
+      enabled: true
+
+  # Kubernetes auth delegator
+  authDelegator:
+    enabled: true
+
+  # Readiness probe
+  readinessProbe:
+    enabled: true
+    port: 8200
+    failureThreshold: 2
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3
+
+  # No liveness probe in dev
+  livenessProbe:
+    enabled: false
+
+# UI Configuration
+ui:
+  enabled: true
+  serviceType: "ClusterIP"
+  externalPort: 8200
+
+# No telemetry in dev mode
+serverTelemetry:
+  serviceMonitor:
+    enabled: false
