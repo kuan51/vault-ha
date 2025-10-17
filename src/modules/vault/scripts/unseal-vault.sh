@@ -79,13 +79,24 @@ is_pod_sealed() {
         return 1
     fi
 
+    # Get vault status output (text format is more reliable than JSON when sealed)
+    local status_output
+    status_output=$(kubectl -n "${NAMESPACE}" exec "${pod}" -- vault status 2>&1 || true)
+
+    # Parse the "Sealed" field from the output
     local sealed
-    sealed=$(kubectl -n "${NAMESPACE}" exec "${pod}" -- vault status -format=json 2>/dev/null | jq -r '.sealed' || echo "true")
+    sealed=$(echo "${status_output}" | grep -E "^Sealed" | awk '{print $2}' || echo "")
+
+    # Debug: show what we got
+    # Uncomment for troubleshooting: echo "[DEBUG] Pod ${pod} sealed status: '${sealed}'" >&2
 
     if [[ "${sealed}" == "true" ]]; then
         return 0  # Pod is sealed
-    else
+    elif [[ "${sealed}" == "false" ]]; then
         return 1  # Pod is not sealed
+    else
+        # Unable to determine status, assume sealed to be safe
+        return 0
     fi
 }
 
