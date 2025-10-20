@@ -180,3 +180,61 @@ variable "kube_context" {
   type        = string
   default     = ""
 }
+
+# Auto-initialization variables
+variable "auto_initialize" {
+  description = "Automatically initialize Vault on first deployment using a Kubernetes Job. WARNING: Only use in dev/test environments. For production, use Cloud KMS auto-unseal."
+  type        = bool
+  default     = false
+}
+
+variable "auto_unseal_enabled" {
+  description = "Automatically unseal Vault pods after initialization"
+  type        = bool
+  default     = true
+}
+
+variable "init_key_shares" {
+  description = "Number of Shamir key shares for Vault initialization"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.init_key_shares >= 1 && var.init_key_shares <= 10
+    error_message = "Key shares must be between 1 and 10."
+  }
+}
+
+variable "init_key_threshold" {
+  description = "Number of keys required to unseal Vault"
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.init_key_threshold >= 1
+    error_message = "Key threshold must be at least 1."
+  }
+}
+
+variable "init_secret_name" {
+  description = "Name of the Kubernetes Secret to store Vault initialization keys and root token"
+  type        = string
+  default     = "vault-unseal-keys"
+}
+
+variable "init_job_cleanup_seconds" {
+  description = "TTL in seconds before Kubernetes automatically deletes the init job (0 = never delete)"
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.init_job_cleanup_seconds >= 0
+    error_message = "Cleanup seconds must be >= 0."
+  }
+}
+
+variable "init_job_image" {
+  description = "Docker image for the initialization job. Uses alpine/k8s with kubectl pre-installed. Bash and jq are installed at runtime."
+  type        = string
+  default     = "alpine/k8s:1.31.1"
+}

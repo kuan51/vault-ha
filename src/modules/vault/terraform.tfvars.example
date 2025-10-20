@@ -1,60 +1,24 @@
-# Example Terraform Variables for Vault Module
-# Copy this file to terraform.tfvars and customize as needed
+  # Kubernetes configuration
+  kube_context = "docker-desktop"
+  release_name = "vault"
+  namespace    = "vault"
 
-# Kubernetes Context (required for local deployment)
-# Set this to match your KUBE_CONTEXT from .env file
-# Alternatively, set via environment: export TF_VAR_KUBE_CONTEXT="docker-desktop"
-kube_context = "docker-desktop"
+  # Vault cluster configuration
+  replicas     = 3
+  storage_size = "10Gi"
 
-# Vault Cluster Configuration
-release_name = "vault"
-namespace    = "vault"
-replicas     = 3  # Use 1 for dev/test, 3+ for HA
+  # UI and Ingress
+  enable_ui      = true
+  enable_ingress = true
+  ingress_host   = "vault.local"
 
-# Helm Chart Configuration
-chart_version       = "0.31.0"
-vault_image_tag     = "1.20.4"
-vault_k8s_image_tag = "1.7.0"
+  # Auto-initialization settings
+  auto_initialize      = true
+  auto_unseal_enabled  = true
+  init_key_shares      = 5
+  init_key_threshold   = 3
+  init_secret_name     = "vault-unseal-keys"
+  init_job_cleanup_seconds = 300
 
-# Storage Configuration
-storage_size  = "10Gi"
-storage_class = null  # Uses cluster default
-
-# UI Configuration
-enable_ui      = true
-enable_ingress = false  # Set to true for ingress access
-ingress_host   = "vault.local"
-
-# Security Settings
-tls_disable = true  # Only for dev/test environments
-
-# Resource Limits
-pod_resources = {
-  requests = {
-    memory = "256Mi"
-    cpu    = "250m"
-  }
-  limits = {
-    memory = "512Mi"
-    cpu    = "500m"
-  }
-}
-
-# Logging Configuration
-log_level  = "info"
-log_format = "json"
-
-# Audit Storage (optional)
-enable_audit_storage = false
-audit_storage_size   = "10Gi"
-
-# Monitoring (optional)
-enable_service_monitor = false
-
-# Labels and Annotations
-labels = {
-  environment = "development"
-  managed-by  = "terraform"
-}
-
-annotations = {}
+  # Optional: Customize init job image
+  # init_job_image = "bitnami/kubectl:1.31"

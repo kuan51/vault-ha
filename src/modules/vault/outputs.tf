@@ -103,3 +103,39 @@ output "port_forward_command" {
   description = "Command to port-forward to Vault UI"
   value       = "kubectl port-forward -n ${helm_release.vault.namespace} svc/${helm_release.vault.name} 8200:8200"
 }
+
+# Auto-initialization outputs
+output "auto_initialize_enabled" {
+  description = "Whether auto-initialization is enabled"
+  value       = var.auto_initialize
+}
+
+output "init_secret_name" {
+  description = "Name of the Kubernetes Secret containing Vault init keys (if auto_initialize enabled)"
+  value       = var.auto_initialize ? var.init_secret_name : null
+}
+
+output "get_root_token_command" {
+  description = "Command to retrieve the Vault root token from Kubernetes Secret"
+  value       = var.auto_initialize ? "kubectl get secret ${var.init_secret_name} -n ${helm_release.vault.namespace} -o jsonpath='{.data.root_token}' | base64 -d" : null
+}
+
+output "get_unseal_keys_command" {
+  description = "Command to retrieve Vault unseal keys from Kubernetes Secret"
+  value       = var.auto_initialize ? "kubectl get secret ${var.init_secret_name} -n ${helm_release.vault.namespace} -o jsonpath='{.data.unseal_keys_b64}' | base64 -d | jq" : null
+}
+
+output "init_job_status_command" {
+  description = "Command to check the status of the initialization job"
+  value       = var.auto_initialize ? "kubectl get job ${helm_release.vault.name}-auto-init -n ${helm_release.vault.namespace}" : null
+}
+
+output "init_job_logs_command" {
+  description = "Command to view logs from the initialization job"
+  value       = var.auto_initialize ? "kubectl logs -n ${helm_release.vault.namespace} job/${helm_release.vault.name}-auto-init" : null
+}
+
+output "manual_unseal_script" {
+  description = "Path to manual unseal script (for unsealing after pod restarts)"
+  value       = var.auto_initialize ? "${path.module}/scripts/k8s-unseal-vault.sh" : "${path.module}/scripts/unseal-vault.sh"
+}
