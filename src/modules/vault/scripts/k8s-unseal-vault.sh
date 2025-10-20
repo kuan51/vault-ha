@@ -291,17 +291,28 @@ unseal_pod() {
         fi
     done
 
-    # Verify unsealed
-    if ! is_pod_sealed "${pod}"; then
-        print_success "Pod ${pod} unsealed successfully"
-        return 0
-    else
-        print_error "Pod ${pod} still sealed after applying ${unseal_count} keys"
-        return 1
-    fi
+    # Verify unsealed with retry (allow time for status to propagate)
+    local verify_attempt=1
+    local max_verify_attempts=5
+    while [ $verify_attempt -le $max_verify_attempts ]; do
+        if ! is_pod_sealed "${pod}"; then
+            print_success "Pod ${pod} unsealed successfully"
+            return 0
+        fi
+
+        if [ $verify_attempt -lt $max_verify_attempts ]; then
+            print_debug "Waiting for unseal to propagate... (attempt $verify_attempt/$max_verify_attempts)"
+            sleep 1
+        fi
+        verify_attempt=$((verify_attempt + 1))
+    done
+
+    print_error "Pod ${pod} still sealed after applying ${unseal_count} keys"
+    return 1
 }
 
 # Join follower node to Raft cluster (if not already a member)
+# This MUST be called BEFORE unsealing the follower pod
 join_follower_to_raft() {
     local follower_pod=$1
     local leader_pod="${RELEASE_NAME}-0"
@@ -315,40 +326,60 @@ join_follower_to_raft() {
     print_info "Checking if ${follower_pod} needs to join Raft cluster..."
 
     # Check if already a member using raft_joined status
+    # Note: This works even when the pod is sealed
     local is_member
     is_member=$(kubectl -n "${NAMESPACE}" exec "${follower_pod}" -- \
         vault status -format=json 2>/dev/null | jq -r '.raft_joined' || echo "false")
 
     if [[ "${is_member}" == "true" ]]; then
-        print_debug "${follower_pod} is already a member of the Raft cluster"
+        print_info "${follower_pod} is already a member of the Raft cluster"
         return 0
     fi
 
     # Get leader address
     local leader_addr="http://${leader_pod}.${RELEASE_NAME}-internal:8200"
 
-    print_info "Joining ${follower_pod} to Raft cluster..."
+    print_info "Joining ${follower_pod} to Raft cluster at ${leader_addr}..."
 
-    # Attempt to join the Raft cluster
+    # Attempt to join the Raft cluster with retry
+    local join_attempt=1
+    local max_join_attempts=3
     local join_output
-    if join_output=$(kubectl -n "${NAMESPACE}" exec "${follower_pod}" -- \
-        vault operator raft join "${leader_addr}" 2>&1); then
-        print_success "${follower_pod} joined Raft cluster successfully"
 
-        # Wait for cluster sync
-        sleep 2
-        return 0
-    else
-        # Check if error is due to already being a member
-        if echo "${join_output}" | grep -q "node already part of cluster\|already joined"; then
-            print_debug "${follower_pod} is already a member of the Raft cluster"
+    while [ $join_attempt -le $max_join_attempts ]; do
+        print_debug "Join attempt $join_attempt/$max_join_attempts for ${follower_pod}"
+
+        if join_output=$(kubectl -n "${NAMESPACE}" exec "${follower_pod}" -- \
+            vault operator raft join "${leader_addr}" 2>&1); then
+            print_success "${follower_pod} joined Raft cluster successfully"
+
+            # Note: Membership verification via raft_joined doesn't work reliably
+            # when the pod is still sealed. The join command succeeding is sufficient.
+            # We'll verify proper cluster membership after unsealing.
+            sleep 2
             return 0
         else
-            print_warning "Failed to join ${follower_pod} to Raft cluster"
-            print_debug "Join output: ${join_output}"
-            return 1
+            # Check if error is due to already being a member
+            if echo "${join_output}" | grep -q "node already part of cluster\|already joined"; then
+                print_info "${follower_pod} is already a member of the Raft cluster"
+                return 0
+            fi
+
+            if [ $join_attempt -lt $max_join_attempts ]; then
+                print_warning "Join attempt $join_attempt failed, retrying in 2s..."
+                print_debug "Join error: ${join_output}"
+                sleep 2
+            else
+                print_error "Failed to join ${follower_pod} to Raft cluster after $max_join_attempts attempts"
+                print_debug "Join output: ${join_output}"
+                return 1
+            fi
         fi
-    fi
+
+        join_attempt=$((join_attempt + 1))
+    done
+
+    return 1
 }
 
 # Unseal all pods
@@ -358,55 +389,79 @@ unseal_all_pods() {
 
     print_info "=== Unsealing Vault pods ==="
     print_info "Found ${replicas} replica(s)"
+    echo ""
 
     local unsealed_count=0
     local already_unsealed=0
     local failed_count=0
     local skipped_count=0
+    local joined_count=0
 
     for ((i=0; i<replicas; i++)); do
         local pod="${RELEASE_NAME}-${i}"
 
-        # Check if pod is already unsealed before attempting
-        if kubectl -n "${NAMESPACE}" get pod "${pod}" &> /dev/null; then
-            if ! is_pod_sealed "${pod}"; then
-                print_info "Pod ${pod} is already unsealed, skipping"
-                already_unsealed=$((already_unsealed + 1))
-                continue
+        print_info "=== Processing pod ${i+1}/${replicas}: ${pod} ==="
+
+        # Check if pod exists
+        if ! kubectl -n "${NAMESPACE}" get pod "${pod}" &> /dev/null; then
+            print_warning "Pod ${pod} does not exist, skipping"
+            skipped_count=$((skipped_count + 1))
+            echo ""
+            continue
+        fi
+
+        # Check pod status
+        local pod_status
+        pod_status=$(kubectl -n "${NAMESPACE}" get pod "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+        if [[ "${pod_status}" != "Running" ]]; then
+            print_warning "Pod ${pod} is not running (status: ${pod_status}), skipping"
+            skipped_count=$((skipped_count + 1))
+            echo ""
+            continue
+        fi
+
+        # Check if already unsealed
+        if ! is_pod_sealed "${pod}"; then
+            print_info "Pod ${pod} is already unsealed, skipping unseal"
+            already_unsealed=$((already_unsealed + 1))
+            echo ""
+            continue
+        fi
+
+        print_info "Pod ${pod} is sealed, will join to cluster and then unseal"
+
+        # CRITICAL ORDER FOR RAFT: Join BEFORE unseal
+        # For follower nodes (not vault-0), join to Raft cluster first
+        if [[ "${pod}" != "${RELEASE_NAME}-0" ]]; then
+            if join_follower_to_raft "${pod}"; then
+                print_success "${pod} successfully joined to Raft cluster"
+                joined_count=$((joined_count + 1))
+            else
+                print_error "${pod} failed to join Raft cluster, cannot proceed with unseal"
+                failed_count=$((failed_count + 1))
+                echo ""
+                continue  # Skip unsealing if join failed
             fi
         fi
 
+        # Now unseal the pod
         if unseal_pod "${pod}"; then
             unsealed_count=$((unsealed_count + 1))
-
-            # Join to Raft cluster if this is a follower node (not vault-0)
-            if [[ "${pod}" != "${RELEASE_NAME}-0" ]]; then
-                if join_follower_to_raft "${pod}"; then
-                    print_debug "${pod} successfully joined to Raft cluster"
-                else
-                    print_warning "${pod} unsealed but may not be joined to cluster"
-                fi
-            fi
+            print_success "✓ ${pod} processing complete"
         else
-            if kubectl -n "${NAMESPACE}" get pod "${pod}" &> /dev/null; then
-                local pod_status
-                pod_status=$(kubectl -n "${NAMESPACE}" get pod "${pod}" -o jsonpath='{.status.phase}')
-                if [[ "${pod_status}" == "Running" ]]; then
-                    failed_count=$((failed_count + 1))
-                else
-                    skipped_count=$((skipped_count + 1))
-                fi
-            else
-                skipped_count=$((skipped_count + 1))
-            fi
+            print_error "✗ ${pod} failed to unseal"
+            failed_count=$((failed_count + 1))
         fi
+
+        echo ""
     done
 
-    echo ""
     echo "======================================================================"
     print_info "Unseal Summary:"
     echo "  Total replicas:     ${replicas}"
     echo "  Already unsealed:   ${already_unsealed}"
+    echo "  Newly joined:       ${joined_count}"
     echo "  Newly unsealed:     ${unsealed_count}"
     echo "  Failed:             ${failed_count}"
     echo "  Skipped:            ${skipped_count}"
