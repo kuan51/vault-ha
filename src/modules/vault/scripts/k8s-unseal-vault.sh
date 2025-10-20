@@ -22,11 +22,12 @@ readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
 # Logging functions
+# All logging goes to stderr to avoid polluting command output captured via $()
 log_with_timestamp() {
     local level=$1
     local color=$2
     shift 2
-    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] ${color}[${level}]${NC} $*"
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] ${color}[${level}]${NC} $*" >&2
 }
 
 print_info() {
@@ -156,15 +157,25 @@ get_vault_secret() {
     print_info "Retrieving unseal keys from secret..."
 
     local secret_data
-    if ! secret_data=$(retry_command ${MAX_RETRY} kubectl get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o json 2>&1); then
+    # Note: Do NOT use 2>&1 here - it would capture debug output from retry_command
+    if ! secret_data=$(retry_command ${MAX_RETRY} kubectl get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o json); then
         print_error "Failed to retrieve secret ${SECRET_NAME}"
-        print_error "Error: ${secret_data}"
         exit 1
     fi
 
+    print_debug "secret_data length: ${#secret_data} bytes"
+    print_debug "secret_data first 200 chars: ${secret_data:0:200}"
+
     # Decode unseal keys
     local unseal_keys_b64
-    unseal_keys_b64=$(echo "${secret_data}" | jq -r '.data.unseal_keys_b64' | base64 -d 2>/dev/null || echo "")
+    local jq_error
+    if ! unseal_keys_b64=$(echo "${secret_data}" | jq -r '.data.unseal_keys_b64' 2>&1); then
+        print_error "jq failed to parse secret_data"
+        print_error "jq error: ${unseal_keys_b64}"
+        exit 1
+    fi
+
+    unseal_keys_b64=$(echo "${unseal_keys_b64}" | base64 -d 2>/dev/null || echo "")
 
     if [[ -z "${unseal_keys_b64}" || "${unseal_keys_b64}" == "null" ]]; then
         print_error "Failed to decode unseal_keys_b64 from secret"
@@ -268,12 +279,12 @@ unseal_pod() {
 
     # Extract unseal keys from environment variable
     local keys=()
-    for ((i=0; i<KEY_THRESHOLD; i++)); do
+    for ((key_idx=0; key_idx<KEY_THRESHOLD; key_idx++)); do
         local key
-        key=$(echo "${UNSEAL_KEYS}" | jq -r ".[${i}]")
+        key=$(echo "${UNSEAL_KEYS}" | jq -r ".[${key_idx}]")
 
         if [[ -z "${key}" || "${key}" == "null" ]]; then
-            print_error "Invalid or missing unseal key at index ${i}"
+            print_error "Invalid or missing unseal key at index ${key_idx}"
             return 1
         fi
 
@@ -388,9 +399,18 @@ unseal_all_pods() {
     local replicas
     replicas=$(get_replica_count)
 
+    print_debug "get_replica_count returned: '${replicas}' (length: ${#replicas})"
+
+    # Strip any whitespace just in case
+    replicas=$(echo "${replicas}" | tr -d '[:space:]')
+    print_debug "After whitespace cleanup: '${replicas}'"
+
     print_info "=== Unsealing Vault pods ==="
     print_info "Found ${replicas} replica(s)"
-    echo ""
+
+    print_debug "Starting loop with replicas='${replicas}'"
+    print_debug "Loop will iterate while i < ${replicas}"
+    echo "" >&2
 
     local unsealed_count=0
     local already_unsealed=0
@@ -401,13 +421,14 @@ unseal_all_pods() {
     for ((i=0; i<replicas; i++)); do
         local pod="${RELEASE_NAME}-${i}"
 
-        print_info "=== Processing pod ${i+1}/${replicas}: ${pod} ==="
+        print_debug "Loop iteration START: i=${i}, replicas=${replicas}, pod=${pod}, condition check: i<replicas = $((i<replicas))"
+        print_info "=== Processing pod $((i+1))/${replicas}: ${pod} ==="
 
         # Check if pod exists
         if ! kubectl -n "${NAMESPACE}" get pod "${pod}" &> /dev/null; then
             print_warning "Pod ${pod} does not exist, skipping"
             skipped_count=$((skipped_count + 1))
-            echo ""
+            echo "" >&2
             continue
         fi
 
@@ -418,7 +439,7 @@ unseal_all_pods() {
         if [[ "${pod_status}" != "Running" ]]; then
             print_warning "Pod ${pod} is not running (status: ${pod_status}), skipping"
             skipped_count=$((skipped_count + 1))
-            echo ""
+            echo "" >&2
             continue
         fi
 
@@ -426,7 +447,7 @@ unseal_all_pods() {
         if ! is_pod_sealed "${pod}"; then
             print_info "Pod ${pod} is already unsealed, skipping unseal"
             already_unsealed=$((already_unsealed + 1))
-            echo ""
+            echo "" >&2
             continue
         fi
 
@@ -441,7 +462,7 @@ unseal_all_pods() {
             else
                 print_error "${pod} failed to join Raft cluster, cannot proceed with unseal"
                 failed_count=$((failed_count + 1))
-                echo ""
+                echo "" >&2
                 continue  # Skip unsealing if join failed
             fi
         fi
@@ -455,19 +476,30 @@ unseal_all_pods() {
             failed_count=$((failed_count + 1))
         fi
 
-        echo ""
+        print_debug "Loop iteration END: i=${i}, about to increment to $((i+1))"
+        echo "" >&2
     done
 
-    echo "======================================================================"
+    print_debug "Loop EXITED: final i=${i}, replicas=${replicas}"
+
+    # Verify loop completed properly - all replicas should be accounted for
+    local total_processed=$((already_unsealed + unsealed_count + failed_count + skipped_count))
+    if [[ ${total_processed} -lt ${replicas} ]]; then
+        print_warning "Loop processed ${total_processed}/${replicas} pods - some pods may have been missed!"
+        print_warning "This indicates a script bug. Check logs above for errors."
+        print_warning "Missing pods: $((replicas - total_processed))"
+    fi
+
+    echo "======================================================================" >&2
     print_info "Unseal Summary:"
-    echo "  Total replicas:     ${replicas}"
-    echo "  Already unsealed:   ${already_unsealed}"
-    echo "  Newly joined:       ${joined_count}"
-    echo "  Newly unsealed:     ${unsealed_count}"
-    echo "  Failed:             ${failed_count}"
-    echo "  Skipped:            ${skipped_count}"
-    echo "======================================================================"
-    echo ""
+    echo "  Total replicas:     ${replicas}" >&2
+    echo "  Already unsealed:   ${already_unsealed}" >&2
+    echo "  Newly joined:       ${joined_count}" >&2
+    echo "  Newly unsealed:     ${unsealed_count}" >&2
+    echo "  Failed:             ${failed_count}" >&2
+    echo "  Skipped:            ${skipped_count}" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
 
     local total_unsealed=$((already_unsealed + unsealed_count))
     if [[ ${total_unsealed} -gt 0 ]]; then
@@ -484,11 +516,11 @@ display_status() {
 
     print_info "=== Cluster Status ==="
 
-    for ((i=0; i<replicas; i++)); do
-        local pod="${RELEASE_NAME}-${i}"
+    for ((pod_idx=0; pod_idx<replicas; pod_idx++)); do
+        local pod="${RELEASE_NAME}-${pod_idx}"
 
         if kubectl -n "${NAMESPACE}" get pod "${pod}" &> /dev/null; then
-            echo ""
+            echo "" >&2
             print_info "Status of ${pod}:"
             kubectl -n "${NAMESPACE}" exec "${pod}" -- vault status 2>/dev/null || \
                 print_warning "Could not get status for ${pod}"
@@ -497,7 +529,7 @@ display_status() {
 
     # If HA mode, show Raft peers
     if [[ ${replicas} -gt 1 ]]; then
-        echo ""
+        echo "" >&2
         print_info "=== Raft Cluster Peers ==="
 
         # Try to get root token from secret
@@ -511,30 +543,30 @@ display_status() {
                 print_warning "Unable to list Raft peers (authentication may be required)"
         else
             print_warning "Cannot list Raft peers - root token not available"
-            echo ""
+            echo "" >&2
             print_info "To manually check cluster peers, run:"
-            echo "  ROOT_TOKEN=\$(kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.root_token}' | base64 -d)"
-            echo "  kubectl exec -n ${NAMESPACE} ${RELEASE_NAME}-0 -- env VAULT_TOKEN=\$ROOT_TOKEN vault operator raft list-peers"
+            echo "  ROOT_TOKEN=\$(kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.root_token}' | base64 -d)" >&2
+            echo "  kubectl exec -n ${NAMESPACE} ${RELEASE_NAME}-0 -- env VAULT_TOKEN=\$ROOT_TOKEN vault operator raft list-peers" >&2
         fi
     fi
 }
 
 # Main execution
 main() {
-    echo ""
-    echo "======================================================================"
-    echo "  Vault Unseal Script for Kubernetes"
-    echo "======================================================================"
-    echo ""
-    echo "Configuration:"
-    echo "  Namespace:        ${NAMESPACE}"
-    echo "  Release Name:     ${RELEASE_NAME}"
-    echo "  Secret Name:      ${SECRET_NAME}"
-    echo "  Key Threshold:    ${KEY_THRESHOLD}"
-    echo "  Max Retries:      ${MAX_RETRY}"
-    echo "  Pod Timeout:      ${POD_TIMEOUT}s"
-    echo "  Debug Mode:       ${DEBUG}"
-    echo ""
+    echo "" >&2
+    echo "======================================================================" >&2
+    echo "  Vault Unseal Script for Kubernetes" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    echo "Configuration:" >&2
+    echo "  Namespace:        ${NAMESPACE}" >&2
+    echo "  Release Name:     ${RELEASE_NAME}" >&2
+    echo "  Secret Name:      ${SECRET_NAME}" >&2
+    echo "  Key Threshold:    ${KEY_THRESHOLD}" >&2
+    echo "  Max Retries:      ${MAX_RETRY}" >&2
+    echo "  Pod Timeout:      ${POD_TIMEOUT}s" >&2
+    echo "  Debug Mode:       ${DEBUG}" >&2
+    echo "" >&2
 
     validate_environment
     check_prerequisites
@@ -549,13 +581,13 @@ main() {
 
     display_status
 
-    echo ""
+    echo "" >&2
     print_info "To access Vault:"
-    echo "  kubectl port-forward -n ${NAMESPACE} svc/${RELEASE_NAME} 8200:8200"
-    echo "  export VAULT_ADDR=http://localhost:8200"
-    echo "  export VAULT_TOKEN=\$(kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.root_token}' | base64 -d)"
-    echo "  vault status"
-    echo ""
+    echo "  kubectl port-forward -n ${NAMESPACE} svc/${RELEASE_NAME} 8200:8200" >&2
+    echo "  export VAULT_ADDR=http://localhost:8200" >&2
+    echo "  export VAULT_TOKEN=\$(kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.root_token}' | base64 -d)" >&2
+    echo "  vault status" >&2
+    echo "" >&2
 }
 
 main "$@"
