@@ -24,29 +24,30 @@ readonly NC='\033[0m' # No Color
 # Logging functions
 log_with_timestamp() {
     local level=$1
-    shift
-    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] [${level}] $*"
+    local color=$2
+    shift 2
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] ${color}[${level}]${NC} $*"
 }
 
 print_info() {
-    log_with_timestamp "INFO" "${BLUE}[INFO]${NC} $1"
+    log_with_timestamp "INFO" "${BLUE}" "$1"
 }
 
 print_success() {
-    log_with_timestamp "SUCCESS" "${GREEN}[SUCCESS]${NC} $1"
+    log_with_timestamp "SUCCESS" "${GREEN}" "$1"
 }
 
 print_warning() {
-    log_with_timestamp "WARNING" "${YELLOW}[WARNING]${NC} $1"
+    log_with_timestamp "WARNING" "${YELLOW}" "$1"
 }
 
 print_error() {
-    log_with_timestamp "ERROR" "${RED}[ERROR]${NC} $1"
+    log_with_timestamp "ERROR" "${RED}" "$1"
 }
 
 print_debug() {
     if [[ "${DEBUG}" == "true" ]]; then
-        log_with_timestamp "DEBUG" "[DEBUG] $1"
+        log_with_timestamp "DEBUG" "" "$1"
     fi
 }
 
