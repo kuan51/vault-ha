@@ -146,7 +146,9 @@ create_dapr_policy() {
     print_info "Creating Dapr read-only policy..."
 
     # Create policy with proper escaping
-    _policy='{"policy":"path \"applications/data/*\" {\n  capabilities = [\"read\", \"list\"]\n}"}'
+    # Include both KV v1 (applications/*) and KV v2 (applications/data/*) paths
+    # This handles Dapr's inconsistent path construction for different component versions
+    _policy='{"policy":"path \"applications/data/*\" {\n  capabilities = [\"read\", \"list\"]\n}\n\npath \"applications/*\" {\n  capabilities = [\"read\", \"list\"]\n}"}'
 
     wget -q -O- --post-data="$_policy" \
         --header="X-Vault-Token: $VAULT_TOKEN" \
@@ -172,7 +174,7 @@ create_dapr_policy() {
 
     # Write token to shared volume
     echo "$_dapr_token" > /vault-token/token
-    chmod 600 /vault-token/token
+    chmod 644 /vault-token/token  # Make readable by all users (Dapr sidecar runs as non-root)
 
     print_success "Dapr token written to /vault-token/token"
 }

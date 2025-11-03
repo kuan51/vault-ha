@@ -352,11 +352,8 @@ services:
     networks:
       - dapr_network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:50005/healthz || exit 0"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    # Healthcheck removed - distroless image has no shell/wget
+    # The placement service runs fine, but healthcheck cannot execute in minimal image
 
   dapr-dashboard:
     image: daprio/dashboard:0.14.0
@@ -395,7 +392,7 @@ services:
       emqx-init:
         condition: service_completed_successfully
       dapr-placement:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
   api-dapr:
