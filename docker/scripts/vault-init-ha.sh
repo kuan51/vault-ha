@@ -214,15 +214,11 @@ main() {
 
     sleep 5  # Allow leader election to complete
 
-    # Explicitly join followers to the cluster
+    # Explicitly join followers to the cluster and unseal immediately
     join_node vault-1
-    wait_for_initialized vault-1 30
+    unseal_node vault-1
 
     join_node vault-2
-    wait_for_initialized vault-2 30
-
-    # Unseal followers (can be done in any order)
-    unseal_node vault-1
     unseal_node vault-2
 
     # Verify cluster formation
