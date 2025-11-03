@@ -276,15 +276,15 @@ services:
   redis-init:
     image: redis:7-alpine
     container_name: redis-init
-    command: >
-      sh -c "
-      sleep 5 &&
-      redis-cli -h redis ACL SETUSER ${REDIS_USERNAME:-xenter} on >${REDIS_PASSWORD:-redis-secret-password} ~* &* +@all &&
-      echo 'Redis user created successfully'
-      "
+    volumes:
+      - ./scripts/redis-init.sh:/scripts/redis-init.sh:ro
+    command: ["/scripts/redis-init.sh"]
     environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
       REDIS_USERNAME: ${REDIS_USERNAME:-xenter}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-secret-password}
+      TEST_AUTH: "false"
     networks:
       - app_network
     depends_on:
@@ -305,7 +305,7 @@ services:
       - "8083:8083"      # WebSocket
       - "18083:18083"    # Dashboard
     environment:
-      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-emqx-public-pass}
     volumes:
       - emqx-data:/opt/emqx/data
       - emqx-log:/opt/emqx/log
@@ -321,21 +321,16 @@ services:
   emqx-init:
     image: alpine:latest
     container_name: emqx-init
-    command: >
-      sh -c "
-      apk add --no-cache curl &&
-      sleep 10 &&
-      curl -X POST 'http://emqx:18083/api/v5/authentication/password_based:built_in_database/users' \
-        -u 'admin:${EMQX_DASHBOARD_PASSWORD:-public}' \
-        -H 'Content-Type: application/json' \
-        -d '{\"user_id\":\"${MQTT_USERNAME:-xenter}\",\"password\":\"${MQTT_PASSWORD:-mqtt-secret-password}\"}' || \
-      echo 'User may already exist or API auth failed. Please create manually if needed.' &&
-      echo 'EMQX initialization complete'
-      "
+    volumes:
+      - ./scripts/emqx-init.sh:/scripts/emqx-init.sh:ro
+    command: ["/scripts/emqx-init.sh"]
     environment:
+      EMQX_HOST: emqx
+      EMQX_API_PORT: "18083"
+      EMQX_ADMIN_USER: admin
+      EMQX_DASHBOARD_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-emqx-public-pass}
       MQTT_USERNAME: ${MQTT_USERNAME:-xenter}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-mqtt-secret-password}
-      EMQX_DASHBOARD_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
     networks:
       - app_network
     depends_on:
