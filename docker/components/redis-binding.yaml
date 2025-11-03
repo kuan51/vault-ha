@@ -1,0 +1,30 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: redis-binding
+spec:
+  type: bindings.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      secretKeyRef:
+        name: redis
+        key: redis-host
+    - name: redisPassword
+      secretKeyRef:
+        name: redis
+        key: redis-password
+    - name: redisUsername
+      secretKeyRef:
+        name: redis
+        key: redis-username
+    - name: redisDB
+      value: "0"
+    - name: enableTLS
+      value: "false"
+auth:
+  secretStore: vault-secretstore
+scopes:
+  - api
+  - test-app
+  - spicedb-worker

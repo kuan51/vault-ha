@@ -1,0 +1,29 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: mqtt-pubsub
+spec:
+  type: pubsub.mqtt3
+  version: v1
+  metadata:
+    - name: url
+      secretKeyRef:
+        name: mqtt
+        key: mqtt-url
+    - name: consumerID
+      value: "dapr-local-dev"
+    - name: qos
+      value: "1"
+    - name: retain
+      value: "false"
+    - name: cleanSession
+      value: "false"
+auth:
+  secretStore: vault-secretstore
+scopes:
+  - api
+  - test-app
+  - iot-kafka
+  - iot-syncdbh2c
+  - novuworker
+  - spicedb-worker
