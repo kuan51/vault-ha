@@ -1,4 +1,7 @@
 services:
+  # ============================================================================
+  # Vault HA Cluster (3-node Raft)
+  # ============================================================================
   vault-0:
     image: hashicorp/vault:1.15.6
     container_name: vault-0
@@ -13,7 +16,6 @@ services:
           path = "/vault/file"
           node_id = "vault-0"
 
-          # Autopilot configuration for automated cluster management
           autopilot {
             cleanup_dead_servers      = true
             last_contact_threshold    = "10s"
@@ -32,7 +34,6 @@ services:
         api_addr = "http://vault-0:8200"
         cluster_addr = "http://vault-0:8201"
 
-        # HA configuration using retry_join
         retry_join {
           leader_api_addr = "http://vault-1:8200"
         }
@@ -40,14 +41,9 @@ services:
           leader_api_addr = "http://vault-2:8200"
         }
 
-        # Enable UI for development
         ui = true
-
-        # Logging configuration
         log_level = "info"
         log_format = "json"
-
-        # Disable mlock for Docker compatibility
         disable_mlock = true
     cap_add:
       - IPC_LOCK
@@ -58,7 +54,7 @@ services:
       - vault_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "vault", "status", "|| exit 0"]
+      test: ["CMD-SHELL", "vault status || exit 0"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -77,7 +73,6 @@ services:
           path = "/vault/file"
           node_id = "vault-1"
 
-          # Autopilot configuration for automated cluster management
           autopilot {
             cleanup_dead_servers      = true
             last_contact_threshold    = "10s"
@@ -116,7 +111,7 @@ services:
       - vault_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "vault", "status", "|| exit 0"]
+      test: ["CMD-SHELL", "vault status || exit 0"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -137,7 +132,6 @@ services:
           path = "/vault/file"
           node_id = "vault-2"
 
-          # Autopilot configuration for automated cluster management
           autopilot {
             cleanup_dead_servers      = true
             last_contact_threshold    = "10s"
@@ -176,7 +170,7 @@ services:
       - vault_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "vault", "status", "|| exit 0"]
+      test: ["CMD-SHELL", "vault status || exit 0"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -184,14 +178,280 @@ services:
       - vault-0
       - vault-1
 
+  # ============================================================================
+  # Vault Load Balancer
+  # ============================================================================
+  vault-lb:
+    image: nginx:alpine
+    container_name: vault-lb
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./config/vault-nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - vault_network
+      - dapr_network
+    depends_on:
+      - vault-0
+      - vault-1
+      - vault-2
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:8200/v1/sys/health || exit 0",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ============================================================================
+  # Vault Initialization (Automated)
+  # ============================================================================
+  vault-init-ha:
+    image: alpine:latest
+    container_name: vault-init-ha
+    command: /scripts/vault-init-ha.sh
+    volumes:
+      - ./scripts/vault-init-ha.sh:/scripts/vault-init-ha.sh:ro
+      - vault-keys:/vault-keys
+    networks:
+      - vault_network
+    depends_on:
+      vault-0:
+        condition: service_healthy
+      vault-1:
+        condition: service_healthy
+      vault-2:
+        condition: service_healthy
+    restart: "no"
+
+  # ============================================================================
+  # Vault Secret Provisioner
+  # ============================================================================
+  vault-provisioner:
+    image: alpine:latest
+    container_name: vault-provisioner
+    command: /scripts/vault-provisioner.sh
+    environment:
+      REDIS_HOST: ${REDIS_HOST:-redis:6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-xenter}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-secret-password}
+      MQTT_USERNAME: ${MQTT_USERNAME:-xenter}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-mqtt-secret-password}
+      POSTGRES_CONNECTION_STRING: ${POSTGRES_CONNECTION_STRING:-postgresql://user:password@postgres:5432/dbname}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+    volumes:
+      - ./scripts/vault-provisioner.sh:/scripts/vault-provisioner.sh:ro
+      - vault-keys:/vault-keys:ro
+      - vault-token:/vault-token
+    networks:
+      - vault_network
+      - dapr_network
+    depends_on:
+      vault-init-ha:
+        condition: service_completed_successfully
+      vault-lb:
+        condition: service_healthy
+    restart: "no"
+
+  # ============================================================================
+  # Redis
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  redis-init:
+    image: redis:7-alpine
+    container_name: redis-init
+    volumes:
+      - ./scripts/redis-init.sh:/scripts/redis-init.sh:ro
+    command: ["/scripts/redis-init.sh"]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_USERNAME: ${REDIS_USERNAME:-xenter}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-secret-password}
+      TEST_AUTH: "false"
+    networks:
+      - app_network
+    depends_on:
+      redis:
+        condition: service_healthy
+      vault-provisioner:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ============================================================================
+  # EMQX MQTT Broker
+  # ============================================================================
+  emqx:
+    image: emqx:5.8
+    container_name: emqx
+    ports:
+      - "1883:1883" # MQTT
+      - "8083:8083" # WebSocket
+      - "18083:18083" # Dashboard
+    environment:
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-emqx-public-pass}
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "emqx ping || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  emqx-init:
+    image: alpine:latest
+    container_name: emqx-init
+    volumes:
+      - ./scripts/emqx-init.sh:/scripts/emqx-init.sh:ro
+    command: ["/scripts/emqx-init.sh"]
+    environment:
+      EMQX_HOST: emqx
+      EMQX_API_PORT: "18083"
+      EMQX_ADMIN_USER: admin
+      EMQX_DASHBOARD_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-emqx-public-pass}
+      MQTT_USERNAME: ${MQTT_USERNAME:-xenter}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-mqtt-secret-password}
+    networks:
+      - app_network
+    depends_on:
+      emqx:
+        condition: service_healthy
+      vault-provisioner:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ============================================================================
+  # Dapr Control Plane
+  # ============================================================================
+  dapr-placement:
+    image: daprio/dapr:1.14.4
+    container_name: dapr-placement
+    command: ["./placement", "-port", "50005", "-log-level", "debug"]
+    ports:
+      - "50005:50005"
+    networks:
+      - dapr_network
+    restart: unless-stopped
+    # Healthcheck removed - distroless image has no shell/wget
+    # The placement service runs fine, but healthcheck cannot execute in minimal image
+
+  dapr-dashboard:
+    image: daprio/dashboard:0.14.0
+    container_name: dapr-dashboard
+    command: ["--port", "8080"]
+    ports:
+      - "9999:8080"
+    networks:
+      - dapr_network
+    depends_on:
+      - dapr-placement
+    restart: unless-stopped
+
+  # ============================================================================
+  # API Application
+  # ============================================================================
+  api:
+    image: ${API_IMAGE:-ghcr.io/xentermd/api.xen.me}:${API_VERSION:-stage-amd64-latest}
+    container_name: api
+    ports:
+      - "8080:8080"
+    environment:
+      XENME_ORIGIN: ${XENME_ORIGIN:-http://localhost:8080}
+      KAFKA_BROKERS: emqx:1883
+      DAPR_HTTP_PORT: 3500
+      DAPR_GRPC_PORT: 50001
+    user: "1000:1000"
+    networks:
+      - app_network
+      - dapr_network
+    depends_on:
+      vault-provisioner:
+        condition: service_completed_successfully
+      redis-init:
+        condition: service_completed_successfully
+      emqx-init:
+        condition: service_completed_successfully
+      dapr-placement:
+        condition: service_started
+    restart: unless-stopped
+
+  api-dapr:
+    image: daprio/daprd:1.14.4
+    container_name: api-dapr
+    command:
+      [
+        "./daprd",
+        "--app-id",
+        "api",
+        "--app-port",
+        "8080",
+        "--dapr-http-port",
+        "3500",
+        "--dapr-grpc-port",
+        "50001",
+        "--resources-path",
+        "/components",
+        "--config",
+        "/config/dapr-config.yaml",
+        "--placement-host-address",
+        "dapr-placement:50005",
+        "--log-level",
+        "debug",
+      ]
+    volumes:
+      - ./components:/components:ro
+      - ./config:/config:ro
+      - vault-token:/vault-token:ro
+    network_mode: "service:api"
+    depends_on:
+      - api
+      - dapr-placement
+      - vault-lb
+    restart: unless-stopped
+
 volumes:
+  # Vault volumes
   vault_file1:
   vault_file2:
   vault_file3:
   vault_logs1:
   vault_logs2:
   vault_logs3:
+  vault-keys:
+  vault-token:
+  # Application volumes
+  redis-data:
+  emqx-data:
+  emqx-log:
 
 networks:
   vault_network:
+    driver: bridge
+  app_network:
+    driver: bridge
+  dapr_network:
     driver: bridge

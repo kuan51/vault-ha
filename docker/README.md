@@ -1,373 +1,603 @@
-# Vault HA Cluster - Docker Compose
+# Vault HA + Dapr Service Mesh - Docker Compose
 
-This directory contains a Docker Compose setup for running a 3-node HashiCorp Vault HA cluster with Raft storage for local development and testing.
+This directory contains a complete Docker Compose stack for running a **3-node HashiCorp Vault HA cluster** integrated with **Dapr service mesh**, **Redis**, **EMQX MQTT broker**, and a sample **API application**. This setup provides automated initialization, secret provisioning, and demonstrates zero-trust architecture patterns for local development and testing.
 
 ## Overview
 
-**Purpose:** Local development environment for Vault HA testing
-**Architecture:** 3-node cluster with Raft integrated storage
-**Ports:** 18200-18202 (avoids conflict with Kubernetes Vault on 8200)
+**Purpose:** Production-like local development environment with HA Vault and Dapr integration
+**Architecture:** 3-node Vault cluster (Raft) + Dapr control plane + Infrastructure services
+**Key Features:**
+- ✅ **HA Mode:** 3-node Raft cluster with nginx load balancer
+- ✅ **Auto-Unseal:** Automated cluster initialization and unsealing
+- ✅ **Auto-Provisioning:** Secrets automatically populated from .env
+- ✅ **Auto-Joining:** Raft cluster formation via retry_join
+- ✅ **Zero-Trust:** API accesses secrets only via Dapr → Vault
+
+## Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Docker Compose Stack                          │
+│                                                                    │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │ Vault HA Cluster (vault_network)                           │  │
+│  │                                                             │  │
+│  │  ┌─────────┐      ┌─────────┐      ┌─────────┐           │  │
+│  │  │vault-0  │◄────►│vault-1  │◄────►│vault-2  │           │  │
+│  │  │(leader) │      │(follower│      │(follower│           │  │
+│  │  └────┬────┘      └─────────┘      └─────────┘           │  │
+│  │       │                                                    │  │
+│  │       │ Raft Consensus                                    │  │
+│  │       ▼                                                    │  │
+│  │  ┌──────────────┐                                         │  │
+│  │  │  vault-lb    │ (Nginx load balancer)                  │  │
+│  │  └──────┬───────┘                                         │  │
+│  └─────────┼─────────────────────────────────────────────────┘  │
+│            │                                                     │
+│            │ 8200                                                │
+│            ▼                                                     │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Initialization Layer                                     │   │
+│  │                                                           │   │
+│  │  ┌────────────────────┐                                 │   │
+│  │  │ vault-init-ha      │ (auto-initialize & unseal)      │   │
+│  │  └─────────┬──────────┘                                 │   │
+│  │            ▼                                             │   │
+│  │  ┌────────────────────┐                                 │   │
+│  │  │ vault-provisioner  │ (populate secrets)              │   │
+│  │  │                    │                                 │   │
+│  │  │ - Enables KV v2    │                                 │   │
+│  │  │ - Writes secrets   │                                 │   │
+│  │  │ - Creates token    │──► /vault-token/token           │   │
+│  │  └────────────────────┘                                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Infrastructure Layer (app_network)                       │   │
+│  │                                                           │   │
+│  │  ┌──────────┐              ┌──────────┐                 │   │
+│  │  │  redis   │              │   emqx   │                 │   │
+│  │  └────┬─────┘              └────┬─────┘                 │   │
+│  │       ▼                         ▼                        │   │
+│  │  ┌──────────┐              ┌──────────┐                 │   │
+│  │  │redis-init│              │emqx-init │                 │   │
+│  │  └──────────┘              └──────────┘                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Dapr Control Plane (dapr_network)                        │   │
+│  │                                                           │   │
+│  │  ┌─────────────────┐    ┌─────────────────┐             │   │
+│  │  │ dapr-placement  │    │ dapr-dashboard  │             │   │
+│  │  └─────────────────┘    └─────────────────┘             │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Application Layer                                        │   │
+│  │                                                           │   │
+│  │  ┌──────────┐      ┌──────────────────┐                 │   │
+│  │  │   API    │◄─────┤   api-dapr       │                 │   │
+│  │  │  :8080   │      │   (sidecar)      │                 │   │
+│  │  └──────────┘      │   :3500          │                 │   │
+│  │                    └─────┬────────────┘                 │   │
+│  │                          │                               │   │
+│  │                          ▼                               │   │
+│  │          ┌───────────────────────────┐                  │   │
+│  │          │  Dapr Components:         │                  │   │
+│  │          │  - vault-secretstore      │                  │   │
+│  │          │  - redis-statestore       │                  │   │
+│  │          │  - mqtt-pubsub            │                  │   │
+│  │          └───────────────────────────┘                  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+Credential Flow:
+  .env → vault-provisioner → Vault KV → Dapr vault-secretstore
+    → Components (redis/mqtt) → API
+```
 
 ## Quick Start
 
-### 1. Start the Cluster
+### Prerequisites
+
+- Docker Engine (20.10+)
+- Docker Compose (2.0+)
+- GitHub Personal Access Token (for pulling API image)
+
+### 1. Configure Environment
 
 ```bash
 cd docker
 
+# Copy environment template
+cp .env.template .env
+
+# Edit .env and set:
+# - GITHUB_TOKEN (required for API image)
+# - Redis/MQTT passwords (or use defaults)
+nano .env
+```
+
+### 2. Start the Stack
+
+```bash
 # Clean start (recommended first time)
 docker-compose down -v
 
-# Start all containers
+# Start all services
 docker-compose up -d
 
-# Check container status
+# Watch initialization logs
+docker-compose logs -f vault-init-ha vault-provisioner
+```
+
+### 3. Verify Deployment
+
+```bash
+# Check all containers are running
 docker-compose ps
+
+# Verify Vault cluster
+docker exec vault-0 vault operator raft list-peers
+
+# Check Dapr dashboard
+open http://localhost:9999
+
+# Check API health
+curl http://localhost:8080/health
 ```
 
-### 2. Initialize and Configure
+## Startup Sequence (Automated)
 
+The stack initializes automatically in this order:
+
+1. **Vault HA Cluster** (5-10 seconds)
+   - vault-0, vault-1, vault-2 start
+   - Raft cluster forms via retry_join
+
+2. **Vault Initialization** (10-15 seconds)
+   - vault-init-ha runs
+   - Initializes vault-0 with 5 keys (threshold 3)
+   - Unseals all 3 nodes
+   - Writes vault-keys.json to volume
+
+3. **Load Balancer** (2-5 seconds)
+   - vault-lb starts
+   - Health checks enabled
+
+4. **Secret Provisioning** (5-10 seconds)
+   - vault-provisioner runs
+   - Enables KV v2 at 'applications' path
+   - Writes secrets (redis, mqtt, etc.)
+   - Creates Dapr token
+   - Writes token to /vault-token/token
+
+5. **Infrastructure Services** (5-10 seconds)
+   - redis, emqx start in parallel
+   - redis-init creates ACL user
+   - emqx-init creates MQTT user
+
+6. **Dapr Control Plane** (2-5 seconds)
+   - dapr-placement starts
+   - dapr-dashboard starts
+
+7. **Application** (5-10 seconds)
+   - api starts
+   - api-dapr sidecar starts
+   - Dapr components load secrets from Vault
+
+**Total startup time:** ~30-60 seconds
+
+## Port Mappings
+
+### Vault HA
+
+| Service | External Port | Internal Port | Purpose |
+|---------|--------------|---------------|---------|
+| vault-0 | 18200 | 8200 | Vault node 0 (direct access) |
+| vault-1 | 18201 | 8200 | Vault node 1 (direct access) |
+| vault-2 | 18202 | 8200 | Vault node 2 (direct access) |
+| vault-lb | 8200 | 8200 | **Load balancer** (recommended endpoint) |
+
+### Infrastructure Services
+
+| Service | External Port | Internal Port | Purpose |
+|---------|--------------|---------------|---------|
+| redis | 6379 | 6379 | Redis state store |
+| emqx | 1883 | 1883 | MQTT broker |
+| emqx | 8083 | 8083 | MQTT WebSocket |
+| emqx | 18083 | 18083 | EMQX Dashboard |
+
+### Dapr & Application
+
+| Service | External Port | Internal Port | Purpose |
+|---------|--------------|---------------|---------|
+| dapr-placement | 50005 | 50005 | Dapr placement service |
+| dapr-dashboard | 9999 | 8080 | Dapr monitoring UI |
+| api | 8080 | 8080 | API application |
+| api-dapr | 3500 | 3500 | Dapr HTTP API (sidecar) |
+
+## Accessing Services
+
+### Vault
+
+**Via Load Balancer (Recommended):**
 ```bash
-# Run the initialization script
-./init-vault-cluster.sh
-```
-
-This script will:
-- Wait for all containers to be ready
-- Initialize vault-0 (leader) with 5 key shares, threshold 3
-- Unseal all three nodes
-- Verify cluster formation
-- Display access information
-
-### 3. Access Vault
-
-**CLI Access:**
-```bash
-export VAULT_ADDR=http://localhost:18200
-export VAULT_TOKEN=<root-token-from-init>
+export VAULT_ADDR=http://localhost:8200
+export VAULT_TOKEN=$(cat vault-keys.json | jq -r '.root_token')
 vault status
+vault operator raft list-peers
+vault kv get applications/redis
 ```
 
-**UI Access:**
-- URL: http://localhost:18200/ui
-- Token: Use root token from initialization
-
-**Direct Node Access:**
+**Via Individual Nodes:**
 ```bash
 # vault-0 (leader)
-docker exec vault-0 vault status
+export VAULT_ADDR=http://localhost:18200
 
 # vault-1 (follower)
-docker exec vault-1 vault status
+export VAULT_ADDR=http://localhost:18201
 
 # vault-2 (follower)
-docker exec vault-2 vault status
+export VAULT_ADDR=http://localhost:18202
+```
+
+**Vault UI:**
+- Load balancer: http://localhost:8200/ui
+- vault-0: http://localhost:18200/ui
+- vault-1: http://localhost:18201/ui
+- vault-2: http://localhost:18202/ui
+- Token: Root token from vault-keys.json
+
+### Redis
+
+```bash
+# Using credentials from .env
+redis-cli -h localhost -p 6379 \
+  --user xenter \
+  --pass redis-secret-password \
+  PING
+
+# Check ACL users
+redis-cli -h localhost -p 6379 ACL LIST
+```
+
+### EMQX MQTT Broker
+
+**Dashboard:**
+- URL: http://localhost:18083
+- Username: `admin`
+- Password: Value from EMQX_DASHBOARD_PASSWORD in .env (default: `public`)
+
+**MQTT Client:**
+```bash
+# Using mosquitto_pub/sub
+mosquitto_pub -h localhost -p 1883 \
+  -u xenter -P mqtt-secret-password \
+  -t test/topic -m "Hello from Vault HA!"
+
+mosquitto_sub -h localhost -p 1883 \
+  -u xenter -P mqtt-secret-password \
+  -t test/topic
+```
+
+### Dapr
+
+**Dashboard:**
+- URL: http://localhost:9999
+- View components, applications, and logs
+
+**Dapr API (via API sidecar):**
+```bash
+# Get state from Redis via Dapr
+curl http://localhost:3500/v1.0/state/redis-statestore/mykey
+
+# Publish to MQTT via Dapr
+curl -X POST http://localhost:3500/v1.0/publish/mqtt-pubsub/test/topic \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Hello via Dapr!"}'
+
+# Get secret from Vault via Dapr
+curl http://localhost:3500/v1.0/secrets/vault-secretstore/redis
+```
+
+### API Application
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# API endpoints (depends on your application)
+curl http://localhost:8080/api/v1/...
+```
+
+## Files and Directories
+
+```
+docker/
+├── docker-compose.yml          # Main orchestration file
+├── .env.template               # Environment variable template
+├── .env                        # Your configuration (gitignored)
+├── init-vault-cluster.sh       # Manual initialization script (fallback)
+├── config/
+│   ├── vault-nginx.conf        # Nginx load balancer config
+│   └── dapr-config.yaml        # Dapr control plane config
+├── components/
+│   ├── vault-secretstore.yaml  # Vault secret backend
+│   ├── redis-statestore.yaml   # Redis state management
+│   ├── redis-binding.yaml      # Redis bindings
+│   └── mqtt-pubsub.yaml        # EMQX pub/sub
+└── scripts/
+    ├── vault-init-ha.sh        # Automated Vault init
+    └── vault-provisioner.sh    # Secret provisioning
 ```
 
 ## Configuration Details
 
-### Network Architecture
+### Vault Configuration
 
-```
-┌─────────────────────────────────────────────────┐
-│                Docker Host                      │
-│                                                 │
-│  ┌─────────────────────────────────────────┐   │
-│  │     vault_network (bridge)              │   │
-│  │                                         │   │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
-│  │  │ vault-0  │  │ vault-1  │  │ vault-2  │ │
-│  │  │ :8200    │  │ :8200    │  │ :8200    │ │
-│  │  └──────────┘  └──────────┘  └──────────┘ │
-│  │       │             │             │       │   │
-│  └───────┼─────────────┼─────────────┼───────┘   │
-│          │             │             │           │
-│     :18200        :18201        :18202           │
-└─────────────────────────────────────────────────┘
-```
+**Storage:** Raft integrated storage (no external dependencies)
+**Replication:** 3-node cluster with autopilot
+**Initialization:** 5 key shares, threshold 3
+**Secrets Engine:** KV v2 at 'applications' path
+**TLS:** Disabled (development mode)
+**UI:** Enabled on all nodes
 
-### Port Mapping
+**Secrets Stored:**
+- `applications/redis` - Redis connection and credentials
+- `applications/mqtt` - MQTT URL and credentials
+- `applications/postgres` - PostgreSQL connection string
+- `applications/minio` - MinIO S3 credentials
 
-| Service | Internal Port | External Port | Purpose |
-|---------|--------------|---------------|---------|
-| vault-0 | 8200 | 18200 | API/UI access (leader) |
-| vault-1 | 8200 | 18201 | API/UI access (follower) |
-| vault-2 | 8200 | 18202 | API/UI access (follower) |
+### Dapr Configuration
 
-**Why 18200-18202?**
-- Avoids conflict with Kubernetes Vault (port 8200)
-- Allows both environments to run simultaneously
-- Easy to remember: 18xxx = Docker Vault
+**mTLS:** Disabled (development mode)
+**Tracing:** Disabled
+**Components:**
+- vault-secretstore (secretstores.hashicorp.vault)
+- redis-statestore (state.redis)
+- redis-binding (bindings.redis)
+- mqtt-pubsub (pubsub.mqtt3)
 
-### Storage Configuration
-
-**Raft Integrated Storage:**
-- **Type:** Raft consensus protocol with BoltDB backend
-- **Data Path:** `/vault/file` (uses Vault image's built-in directory)
-- **Autopilot:** Enabled for automated cluster management
-- **Min Quorum:** 2 nodes required for operations
-
-**Volume Mounts:**
-- `vault_file1`, `vault_file2`, `vault_file3` - Raft data persistence
-- `vault_logs1`, `vault_logs2`, `vault_logs3` - Vault logs
-
-**Why `/vault/file`?**
-- Built into the Vault image with correct permissions (`vault:vault`, UID 100:1000)
-- Entrypoint automatically manages permissions for bind mounts
-- No need for custom entrypoint or root user workarounds
-- Follows HashiCorp's official image design patterns
-
-### Key Features
-
-1. **Autopilot Configuration**
-   - Automatic dead server cleanup
-   - Server stabilization: 10s
-   - Last contact threshold: 10s
-   - Minimum quorum: 2 nodes
-
-2. **High Availability**
-   - 3-node cluster with automatic leader election
-   - `retry_join` for automatic cluster formation
-   - Raft consensus for state replication
-
-3. **Development-Friendly**
-   - TLS disabled for easier testing
-   - UI enabled on all nodes
-   - JSON logging for better debugging
-   - Healthchecks for monitoring
-
-## Common Operations
-
-### View Cluster Status
-
-```bash
-# Set environment
-export VAULT_ADDR=http://localhost:18200
-export VAULT_TOKEN=<your-root-token>
-
-# Check Raft peers
-vault operator raft list-peers
-
-# Expected output:
-# Node       Address        State     Voter
-# ----       -------        -----     -----
-# vault-0    10.x.x.x:8201  leader    true
-# vault-1    10.x.x.x:8201  follower  true
-# vault-2    10.x.x.x:8201  follower  true
-```
-
-### Check Container Logs
-
-```bash
-# All containers
-docker-compose logs -f
-
-# Specific container
-docker-compose logs -f vault-0
-
-# Last 100 lines
-docker-compose logs --tail=100 vault-0
-```
-
-### Restart Cluster
-
-```bash
-# Restart all containers
-docker-compose restart
-
-# After restart, you'll need to unseal again
-docker exec vault-0 vault operator unseal <key1>
-docker exec vault-0 vault operator unseal <key2>
-docker exec vault-0 vault operator unseal <key3>
-# Repeat for vault-1 and vault-2
-```
-
-### Stop Cluster
-
-```bash
-# Stop containers (keeps data)
-docker-compose stop
-
-# Stop and remove containers (keeps volumes)
-docker-compose down
-
-# Stop, remove containers AND volumes (clean slate)
-docker-compose down -v
-```
-
-### Force Leader Election
-
-```bash
-# Current leader steps down
-docker exec -e VAULT_TOKEN="$VAULT_TOKEN" vault-0 vault operator step-down
-
-# New leader will be elected automatically
-```
+**Sidecar Pattern:**
+- api-dapr shares network namespace with api container
+- Dapr intercepts all external service access
+- Credentials retrieved from Vault at runtime
 
 ## Troubleshooting
 
-### Containers Exit Immediately
+### Vault Pods Not Unsealing
 
-**Issue:** Permission denied errors on volumes
-
-**Solution:** Configuration uses `/vault/file` which has built-in permission management
 ```bash
-# If issue persists, clean volumes and restart
-docker-compose down -v
-docker-compose up -d
-```
+# Check vault-init-ha logs
+docker-compose logs vault-init-ha
 
-### Port Already in Use
+# Manually unseal if needed
+docker exec vault-0 vault operator unseal <key1>
+docker exec vault-0 vault operator unseal <key2>
+docker exec vault-0 vault operator unseal <key3>
 
-**Issue:** Port 18200-18202 already allocated
-
-**Solution:** Check what's using the port
-```bash
-# Find process using port
-sudo lsof -i :18200
-
-# Kill if needed
-sudo kill <PID>
-
-# Or change ports in docker-compose.yml
-```
-
-### Node Won't Join Cluster
-
-**Issue:** `retry_join` not working
-
-**Solution:**
-```bash
-# Check network connectivity
-docker exec vault-1 ping -c 3 vault-0
-
-# Check if node already initialized
-docker exec vault-1 vault status
-
-# If initialized separately, need to clean volumes
-docker-compose down -v
-docker-compose up -d
-```
-
-### Cluster Split Brain
-
-**Issue:** Multiple leaders or conflicting Raft states
-
-**Solution:** Clean slate and reinitialize
-```bash
-docker-compose down -v
-rm -f vault-keys.json
-docker-compose up -d
+# Or use the manual script
 ./init-vault-cluster.sh
 ```
 
-### Container Keeps Restarting
+### Raft Cluster Not Forming
 
-**Check logs:**
 ```bash
-docker-compose logs vault-0
+# Check Vault logs
+docker-compose logs vault-0 vault-1 vault-2
 
-# Common issues:
-# - Port conflict
-# - Permission issues
-# - Invalid configuration
+# Check network connectivity
+docker exec vault-1 ping vault-0
+
+# Verify Raft configuration
+docker exec vault-0 cat /vault/config/extraconfig-from-values.hcl
+
+# Check Raft status
+docker exec -e VAULT_TOKEN=$(cat vault-keys.json | jq -r '.root_token') \
+  vault-0 vault operator raft list-peers
 ```
 
-## Differences from Production (Kubernetes)
+### Secret Provisioning Failed
 
-| Aspect | Docker Compose | Kubernetes (Phase 4) |
-|--------|----------------|---------------------|
-| **Initialization** | `retry_join` (automatic) | Manual join (vault-raft-join job) |
-| **TLS** | Disabled | Required |
-| **Auto-Unseal** | Manual (Shamir) | Azure Key Vault |
-| **Service Discovery** | Docker DNS | Kubernetes Service |
-| **Persistence** | Docker volumes | PersistentVolumeClaims |
-| **RBAC** | None | Kubernetes RBAC + Vault policies |
-| **Monitoring** | Manual | Loki, Prometheus, Grafana |
+```bash
+# Check provisioner logs
+docker-compose logs vault-provisioner
+
+# Verify Vault is unsealed
+docker exec vault-0 vault status
+
+# Manually re-run provisioner
+docker-compose up -d vault-provisioner
+docker-compose logs -f vault-provisioner
+```
+
+### Dapr Components Not Loading
+
+```bash
+# Check api-dapr logs
+docker-compose logs api-dapr
+
+# Verify Vault token exists
+docker exec api-dapr cat /vault-token/token
+
+# Test Vault connection
+docker exec api-dapr wget -q -O- http://vault-lb:8200/v1/sys/health
+
+# Restart Dapr sidecar
+docker-compose restart api-dapr
+```
+
+### API Cannot Access Redis/EMQX
+
+```bash
+# Check Dapr component status
+curl http://localhost:3500/v1.0/metadata
+
+# Test secret retrieval
+curl http://localhost:3500/v1.0/secrets/vault-secretstore/redis
+
+# Check Redis connectivity
+docker exec api ping redis
+
+# Check EMQX connectivity
+docker exec api ping emqx
+```
+
+### GitHub API Image Pull Failed
+
+```bash
+# Verify GITHUB_TOKEN in .env
+cat .env | grep GITHUB_TOKEN
+
+# Test token
+docker login ghcr.io -u YOUR_USERNAME -p $GITHUB_TOKEN
+
+# Pull image manually
+docker pull ghcr.io/xentermd/api.xen.me:stage-amd64-latest
+```
+
+## Manual Operations
+
+### Restart After Shutdown
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Wait 30-60 seconds for initialization
+
+# Verify cluster
+docker exec vault-0 vault operator raft list-peers
+```
+
+**Note:** vault-keys.json is persisted in a Docker volume, so re-initialization is automatic.
+
+### Clean Slate Restart
+
+```bash
+# Remove all containers and volumes
+docker-compose down -v
+
+# Remove vault-keys.json from volume (if needed)
+docker volume rm docker_vault-keys
+
+# Start fresh
+docker-compose up -d
+```
+
+### Manual Vault Initialization (Fallback)
+
+If automated initialization fails:
+
+```bash
+# Start only Vault cluster
+docker-compose up -d vault-0 vault-1 vault-2
+
+# Run manual script
+./init-vault-cluster.sh
+
+# Then start remaining services
+docker-compose up -d
+```
+
+### Backup Vault Data
+
+```bash
+# Create Raft snapshot
+docker exec -e VAULT_TOKEN=$(cat vault-keys.json | jq -r '.root_token') \
+  vault-0 vault operator raft snapshot save /tmp/snapshot.snap
+
+# Copy to host
+docker cp vault-0:/tmp/snapshot.snap ./backup-$(date +%Y%m%d).snap
+```
+
+### Restore Vault Data
+
+```bash
+# Copy snapshot to container
+docker cp ./backup.snap vault-0:/tmp/restore.snap
+
+# Restore
+docker exec -e VAULT_TOKEN=$(cat vault-keys.json | jq -r '.root_token') \
+  vault-0 vault operator raft snapshot restore /tmp/restore.snap
+
+# Restart cluster
+docker-compose restart vault-0 vault-1 vault-2
+```
 
 ## Security Considerations
 
-⚠️ **This setup is for DEVELOPMENT ONLY**
+⚠️ **Development Mode Only**
 
-**Not Production-Ready Because:**
-1. **TLS Disabled** - All communication unencrypted
-2. **Root User** - Containers run as root
-3. **No Auto-Unseal** - Manual unseal after restarts
-4. **No Access Controls** - No network policies or firewalls
-5. **No Audit Logging** - No FDA CFR Part 11 compliance
-6. **Keys in Plain Text** - vault-keys.json not encrypted
+This setup is designed for **local development and testing** with these security trade-offs:
 
-**For Production:** Use the Kubernetes deployment in Phase 4 with:
-- TLS encryption
-- Auto-unseal with cloud KMS
-- Network policies
-- RBAC and least-privilege policies
-- Audit logging to Loki
-- Secret rotation and compliance tracking
+**Current Security Posture:**
+- ✅ Secrets stored in Vault (not environment variables)
+- ✅ Redis ACL authentication
+- ✅ EMQX user authentication
+- ✅ Dapr uses token (not root token)
+- ❌ No TLS (HTTP only)
+- ❌ Root token in plaintext file
+- ❌ Unseal keys in Docker volume
+- ❌ No audit logging
+- ❌ No Dapr mTLS
 
-## Useful Commands
+**For Production Deployment:**
+1. Enable TLS for Vault, Redis, EMQX
+2. Enable Dapr mTLS (requires Kubernetes)
+3. Use Cloud KMS auto-unseal (AWS KMS, Azure Key Vault, GCP)
+4. Enable Vault audit logging
+5. Implement secret rotation
+6. Use Vault AppRole instead of token file
+7. Deploy to Kubernetes (use src/modules/vault/)
 
-### Health Checks
+## Next Steps
 
-```bash
-# Check all containers
-docker-compose ps
+### Migrate to Kubernetes
 
-# Detailed health status
-docker inspect vault-0 | grep -A 10 Health
-
-# Quick status check
-docker exec vault-0 vault status
-```
-
-### Backup and Restore
+For production deployments, use the Terraform module:
 
 ```bash
-# Take Raft snapshot
-docker exec -e VAULT_TOKEN="$VAULT_TOKEN" vault-0 \
-  vault operator raft snapshot save /vault/logs/snapshot.snap
-
-# Copy snapshot out
-docker cp vault-0:/vault/logs/snapshot.snap ./backup-$(date +%Y%m%d).snap
-
-# Restore snapshot (on clean cluster)
-docker cp ./backup-20241016.snap vault-0:/vault/logs/restore.snap
-docker exec -e VAULT_TOKEN="$VAULT_TOKEN" vault-0 \
-  vault operator raft snapshot restore /vault/logs/restore.snap
+cd ../src/modules/vault/
+terraform apply -var="auto_initialize=true" -var="replicas=3"
 ```
 
-### Enable Secret Engines
+See: [Kubernetes Deployment Guide](../src/modules/vault/README.md)
 
-```bash
-export VAULT_ADDR=http://localhost:18200
-export VAULT_TOKEN=<root-token>
+### Add More Services
 
-# KV v2 secrets
-vault secrets enable -path=secret kv-v2
+To add additional services (PostgreSQL, MinIO, etc.):
 
-# PKI for certificates
-vault secrets enable pki
+1. Add service to docker-compose.yml
+2. Update vault-provisioner.sh to add secrets
+3. Create Dapr component in components/
+4. Configure scopes in component metadata
 
-# Database secrets
-vault secrets enable database
+### Enable Monitoring
+
+Add Prometheus and Grafana:
+
+```yaml
+# docker-compose.yml
+prometheus:
+  image: prom/prometheus
+  ports:
+    - "9090:9090"
+  volumes:
+    - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+grafana:
+  image: grafana/grafana
+  ports:
+    - "3000:3000"
 ```
-
-## Files
-
-- `docker-compose.yml` - Main configuration
-- `init-vault-cluster.sh` - Initialization script
-- `README.md` - This file
-- `vault-keys.json` - Generated unseal keys (gitignored)
 
 ## References
 
-- [HashiCorp Vault Documentation](https://developer.hashicorp.com/vault/docs)
-- [Vault Raft Storage](https://developer.hashicorp.com/vault/docs/configuration/storage/raft)
-- [Kubernetes Vault Deployment](../docs/operations/vault-ha-implementation-guide.md)
-
-## Support
-
-For issues related to:
-- **Docker Compose setup**: Check this README and troubleshooting section
-- **Kubernetes deployment**: See `docs/operations/vault-ha-implementation-guide.md`
-- **Vault configuration**: See `src/4-infrastructure-services/modules/vault/`
+- [HashiCorp Vault Documentation](https://developer.hashicorp.com/vault)
+- [Dapr Documentation](https://docs.dapr.io)
+- [Vault Helm Chart](https://github.com/hashicorp/vault-helm)
+- [Raft Storage Backend](https://developer.hashicorp.com/vault/docs/configuration/storage/raft)
+- [Dapr Secret Stores](https://docs.dapr.io/reference/components-reference/supported-secret-stores/)
