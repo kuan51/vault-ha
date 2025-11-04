@@ -197,7 +197,11 @@ services:
       - vault-2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8200/v1/sys/health || exit 0"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:8200/v1/sys/health || exit 0",
+        ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -301,9 +305,9 @@ services:
     image: emqx:5.8
     container_name: emqx
     ports:
-      - "1883:1883"      # MQTT
-      - "8083:8083"      # WebSocket
-      - "18083:18083"    # Dashboard
+      - "1883:1883" # MQTT
+      - "8083:8083" # WebSocket
+      - "18083:18083" # Dashboard
     environment:
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-emqx-public-pass}
     volumes:
@@ -401,14 +405,22 @@ services:
     command:
       [
         "./daprd",
-        "--app-id", "api",
-        "--app-port", "8080",
-        "--dapr-http-port", "3500",
-        "--dapr-grpc-port", "50001",
-        "--resources-path", "/components",
-        "--config", "/config/dapr-config.yaml",
-        "--placement-host-address", "dapr-placement:50005",
-        "--log-level", "debug"
+        "--app-id",
+        "api",
+        "--app-port",
+        "8080",
+        "--dapr-http-port",
+        "3500",
+        "--dapr-grpc-port",
+        "50001",
+        "--resources-path",
+        "/components",
+        "--config",
+        "/config/dapr-config.yaml",
+        "--placement-host-address",
+        "dapr-placement:50005",
+        "--log-level",
+        "debug",
       ]
     volumes:
       - ./components:/components:ro
